@@ -1,12 +1,27 @@
-import { Router } from 'express';
-import { register, login } from '../modules/auth/auth.controller';
-import { getUsers } from '../modules/auth/auth.controller';
-import authMiddleware from '../middlewares/auth.middleware';
+import { Router } from "express";
+import {
+  sendOtpController,
+  verifyOtpController,
+  login,
+  resetPasswordController,
+  getUsers,
+} from "../modules/auth/auth.controller";
+
+import authMiddleware from "../middlewares/auth.middleware";
 
 const router = Router();
 
-router.post('/register', register);
-router.post('/login', login);
-router.get('/users', authMiddleware, getUsers);
+/* OTP SYSTEM */
+router.post("/send-otp", sendOtpController);
+router.post("/verify-otp", verifyOtpController);
+
+/* LOGIN */
+router.post("/login", login);
+
+/* RESET PASSWORD */
+router.post("/reset-password", resetPasswordController);
+
+/* USERS */
+router.get("/users", authMiddleware, getUsers);
 
 export default router;

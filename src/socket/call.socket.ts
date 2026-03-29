@@ -1,88 +1,162 @@
 import { Server, Socket } from "socket.io";
 
-const activeCalls = new Map<string, string>();
-const pendingCalls = new Map<string, string>();
+interface CallSession {
+  caller: string;
+  callee: string;
+  type: "audio" | "video";
+}
+
+const activeCalls = new Map<string, CallSession>();
 
 export const callSocket = (io: Server, socket: Socket) => {
 
-  const userId = socket.data.userId;
+  const userId: string = socket.data.userId.toString();
 
   console.log("📞 Call socket active:", userId);
 
-  /* ---------------- CALL USER ---------------- */
+  /* ---------------- START CALL ---------------- */
 
-  socket.on("call_user", ({ to, offer }) => {
+  socket.on("start_call", ({ callId, to, offer, type }) => {
 
-    if (activeCalls.has(userId) || activeCalls.has(to)) {
+    const receiverId = to?.toString();
 
-      console.log("❌ Call rejected - user already in call");
+    console.log("\n========== START CALL ==========");
+    console.log("Caller:", userId);
+    console.log("Receiver:", receiverId);
+    console.log("CallID:", callId);
+    console.log("Type:", type);
 
-      socket.emit("call_busy");
-
+    if (!receiverId) {
+      console.log("❌ Receiver missing");
       return;
-
     }
 
-    console.log(`📤 ${userId} calling ${to}`);
+    // --- BUSY CHECK LOGIC ---
+    // Check if the receiver is already involved in any active call
+    const activeSessions = Array.from(activeCalls.values());
+    const isBusy = activeSessions.some(
+      call => call.caller === receiverId || call.callee === receiverId
+    );
 
-    pendingCalls.set(userId, to);
+    if (isBusy) {
+      console.log(`⚠️ User ${receiverId} is busy`);
+      return socket.emit("call_busy", { 
+        callId, 
+        message: "User is in another call" 
+      });
+    }
+    // ------------------------
 
-    io.to(to).emit("incoming_call", {
+    if (!offer) {
+      console.log("❌ Offer missing from caller");
+      return;
+    }
+
+    const callType = type === "video" ? "video" : "audio";
+
+    console.log("✅ Offer received from caller");
+
+    activeCalls.set(callId, {
+      caller: userId,
+      callee: receiverId,
+      type: callType
+    });
+
+    const room = io.sockets.adapter.rooms.get(receiverId);
+
+    if (!room) {
+      console.log("⚠️ Receiver NOT in socket room:", receiverId);
+    } else {
+      console.log("✅ Receiver sockets in room:", room.size);
+    }
+
+    console.log("📡 Emitting incoming_call to:", receiverId);
+
+    io.to(receiverId).emit("incoming_call", {
+      callId,
       from: userId,
       offer,
+      type: callType
     });
+
+    console.log("================================\n");
 
   });
 
   /* ---------------- ANSWER CALL ---------------- */
 
-  socket.on("call_answer", ({ to, answer }) => {
+  socket.on("answer_call", ({ callId, answer }) => {
 
-    console.log(`✅ ${userId} accepted call from ${to}`);
+    console.log("\n========== ANSWER CALL ==========");
+    console.log("User answering:", userId);
+    console.log("CallID:", callId);
 
-    pendingCalls.delete(to);
+    if (!answer) {
+      console.log("❌ Answer missing");
+      return;
+    }
 
-    activeCalls.set(userId, to);
-    activeCalls.set(to, userId);
+    const call = activeCalls.get(callId);
 
-    io.to(to).emit("call_answered", {
-      answer,
+    if (!call) {
+      console.log("❌ Call session not found");
+      return;
+    }
+
+    console.log("📡 Sending call_answered to caller:", call.caller);
+
+    io.to(call.caller).emit("call_answered", {
+      callId,
+      answer
     });
 
-  });
-
-  /* ---------------- REJECT CALL ---------------- */
-
-  socket.on("reject_call", ({ to }) => {
-
-    console.log(`❌ ${userId} rejected call from ${to}`);
-
-    pendingCalls.delete(to);
-
-    io.to(to).emit("call_rejected");
+    console.log("================================\n");
 
   });
 
   /* ---------------- ICE ---------------- */
 
-  socket.on("ice_candidate", ({ to, candidate }) => {
+  socket.on("ice_candidate", ({ callId, to, candidate }) => {
 
-    io.to(to).emit("ice_candidate", {
-      candidate,
+    const receiverId = to?.toString();
+
+    if (!receiverId) return;
+
+    console.log("🧊 ICE candidate");
+    console.log("From:", userId);
+    console.log("To:", receiverId);
+    console.log("CallID:", callId);
+
+    io.to(receiverId).emit("ice_candidate", {
+      callId,
+      candidate
     });
 
   });
 
   /* ---------------- END CALL ---------------- */
 
-  socket.on("end_call", ({ to }) => {
+  // UPDATED: Added 'to' parameter for fail-safe routing
+  socket.on("end_call", ({ callId, to }) => {
 
-    console.log(`📴 ${userId} ended call`);
+    console.log("\n📴 END CALL");
+    console.log("User:", userId);
+    console.log("CallID:", callId);
 
-    activeCalls.delete(userId);
-    activeCalls.delete(to);
+    const call = activeCalls.get(callId);
 
-    io.to(to).emit("call_ended");
+    if (call) {
+      console.log("📡 Notifying both users via Map");
+      io.to(call.caller).emit("call_ended", { callId });
+      io.to(call.callee).emit("call_ended", { callId });
+      activeCalls.delete(callId);
+    } else if (to) {
+      // FAIL-SAFE: If the map lookup fails (race condition), notify the 'to' user directly
+      console.log("📡 Map lookup failed, using fail-safe 'to' ID:", to);
+      io.to(to).emit("call_ended", { callId });
+    } else {
+      console.log("⚠️ Call session already removed and no 'to' ID provided");
+    }
 
   });
 
@@ -90,20 +164,25 @@ export const callSocket = (io: Server, socket: Socket) => {
 
   socket.on("disconnect", () => {
 
-    const peer = activeCalls.get(userId);
+    console.log("⚠️ User disconnected:", userId);
 
-    if (peer) {
+    for (const [callId, call] of activeCalls.entries()) {
 
-      console.log(`📴 ${userId} disconnected during call`);
+      if (call.caller === userId || call.callee === userId) {
 
-      io.to(peer).emit("call_ended");
+        const otherUser =
+          call.caller === userId ? call.callee : call.caller;
 
-      activeCalls.delete(userId);
-      activeCalls.delete(peer);
+        console.log("📡 Ending call due to disconnect");
+        console.log("CallID:", callId);
+
+        io.to(otherUser).emit("call_ended", { callId });
+
+        activeCalls.delete(callId);
+
+      }
 
     }
-
-    pendingCalls.delete(userId);
 
   });
 

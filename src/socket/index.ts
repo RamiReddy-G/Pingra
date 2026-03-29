@@ -22,18 +22,27 @@ export const initSocket = (httpServer: any) => {
 
       const token = socket.handshake.auth.token;
 
-      if (!token) return next(new Error("Auth error"));
+      if (!token) {
+        console.log("❌ Socket auth failed: token missing");
+        return next(new Error("Auth error"));
+      }
 
       const decoded = jwt.verify(
         token,
         process.env.JWT_SECRET as string
       ) as any;
 
-      socket.data.userId = decoded.id.toString();
+      const userId = decoded.id.toString();
+
+      socket.data.userId = userId;
+
+      console.log("🔐 Socket authenticated:", userId);
 
       next();
 
-    } catch {
+    } catch (err) {
+
+      console.log("❌ Socket auth error");
 
       next(new Error("Auth error"));
 
@@ -45,9 +54,17 @@ export const initSocket = (httpServer: any) => {
 
   io.on("connection", (socket: Socket) => {
 
-    const userId = socket.data.userId;
+    const userId: string = socket.data.userId.toString();
+
+    console.log("\n========== SOCKET CONNECTED ==========");
+    console.log("User:", userId);
+    console.log("Socket ID:", socket.id);
+
+    /* JOIN PERSONAL ROOM */
 
     socket.join(userId);
+
+    console.log("🏠 Joined room:", userId);
 
     /* ---------------- TRACK ONLINE USERS ---------------- */
 
@@ -63,14 +80,14 @@ export const initSocket = (httpServer: any) => {
 
     socket.emit(
       "online_users",
-      Array.from(onlineUsers.keys())
+      Array.from(onlineUsers.keys()).map(String)
     );
 
     /* BROADCAST USER ONLINE */
 
     socket.broadcast.emit("user_online", { userId });
 
-    /* SOCKET MODULES */
+    /* ---------------- SOCKET MODULES ---------------- */
 
     chatSocket(io, socket);
     callSocket(io, socket);
@@ -78,6 +95,8 @@ export const initSocket = (httpServer: any) => {
     /* ---------------- DISCONNECT ---------------- */
 
     socket.on("disconnect", () => {
+
+      console.log("\n⚠️ Socket disconnected:", socket.id);
 
       const sockets = onlineUsers.get(userId);
 
@@ -101,7 +120,9 @@ export const initSocket = (httpServer: any) => {
 
 export const getIO = () => {
 
-  if (!io) throw new Error("Socket not initialized");
+  if (!io) {
+    throw new Error("Socket not initialized");
+  }
 
   return io;
 
